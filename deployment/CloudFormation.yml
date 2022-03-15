@@ -132,7 +132,7 @@ Resources:
       BadgeEnabled: true
       Environment:
         ComputeType: BUILD_GENERAL1_SMALL
-        Image: standard:5.0
+        Image: aws/codebuild/standard:5.0
         Type: LINUX_CONTAINER
       LogsConfig:
         CloudWatchLogs:
@@ -149,6 +149,8 @@ Resources:
           Resource:
             Fn::ImportValue: CodeBuildCredential
           Type: OAUTH
+        GitSubmodulesConfig:
+          FetchSubmodules: true
         BuildSpec:
           Fn::Sub:
           - |
@@ -161,21 +163,20 @@ Resources:
                 - npm install
               build:
                 commands:
-                - npm build
+                - npm run build
               post_build:
                 commands:
                 - aws s3 sync --delete $CODEBUILD_SRC_DIR/public s3://${WebsiteBucket}
                 - >
-                  cd $CODEBUILD_SRC_DIR/public
-                  regex="./(.*)/index.html"
-                  find . | while read -r line; do
-                      if [[ $filePath =~ $regex ]]; then
-                          directoryPath=${BASH_REMATCH[1]}
-                          echo "Uploading from $filePath to s3://$BUCKET/$directoryPath/"
-                          aws s3api put-object --bucket "$BUCKET" --body $filePath --key "$directoryPath" --content-type text/html > /dev/null
-                          aws s3api put-object --bucket "$BUCKET" --body $filePath --key "$directoryPath/" --content-type text/html > /dev/null
+                  cd $CODEBUILD_SRC_DIR/public;
+                  find -name index.html -type f -printf '%P\n' | while read -r filePath; do
+                      directoryPath=`dirname $filePath`;
+                      if [[ $directoryPath != '.' ]]; then
+                          echo "Uploading from $filePath to s3://${WebsiteBucket}/$directoryPath/";
+                          aws s3api put-object --bucket "${WebsiteBucket}" --body $filePath --key "$directoryPath" --content-type text/html > /dev/null;
+                          aws s3api put-object --bucket "${WebsiteBucket}" --body $filePath --key "$directoryPath/" --content-type text/html > /dev/null;
                       fi;
-                  done
+                  done;
           - WebsiteBucket:
               Ref: WebsiteBucket
         Location:
