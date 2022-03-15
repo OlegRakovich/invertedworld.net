@@ -1,0 +1,243 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Template to deploy everything.
+Parameters:
+  DomainName:
+    Description: Name of the domain where application is hosted
+    Type: String
+  WebsiteBucketName:
+    Description: Bucket to store artifacts for the website
+    Type: String
+  ResourceNamesPrefix:
+    Description: Prefix to use in all resources
+    Type: String
+  RepositoryUrl:
+    Description: Path to github repository
+    Type: String
+Resources:
+
+  DomainCloudFront:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Aliases:
+        - Ref: DomainName
+        DefaultCacheBehavior:
+          AllowedMethods:
+          - GET
+          - HEAD
+          CachedMethods:
+          - GET
+          - HEAD
+          Compress: false
+          DefaultTTL: 0
+          ForwardedValues:
+            Cookies:
+              Forward: none
+            Headers: []
+            QueryString: false
+            QueryStringCacheKeys: []
+          MaxTTL: 0
+          MinTTL: 0
+          TargetOriginId: WebsiteOrigin
+          ViewerProtocolPolicy: redirect-to-https
+        DefaultRootObject: index.html
+        Enabled: true
+        HttpVersion: http2
+        IPV6Enabled: false
+        Origins:
+        - DomainName:
+            Fn::Sub: "${WebsiteBucketName}.s3.amazonaws.com"
+          Id: WebsiteOrigin
+          S3OriginConfig:
+            OriginAccessIdentity:
+              Fn::Sub: origin-access-identity/cloudfront/${WebsiteOriginIdentity}
+        PriceClass: PriceClass_100
+        ViewerCertificate:
+          AcmCertificateArn:
+            Ref: Certificate
+          MinimumProtocolVersion: TLSv1.2_2019
+          SslSupportMethod: sni-only
+  WebsiteOriginIdentity:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: Identity of website origin
+  WebsiteDNSRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName:
+        Fn::Sub: "${DomainName}."
+      Name:
+        Ref: DomainName
+      AliasTarget:
+        DNSName:
+          Fn::GetAtt:
+          - DomainCloudFront
+          - DomainName
+        EvaluateTargetHealth: false
+        HostedZoneId: Z2FDTNDATAQYW2
+      Type: A
+
+  WebsiteBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName:
+        Ref: WebsiteBucketName
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+  WebsiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket:
+        Ref: WebsiteBucket
+      PolicyDocument:
+        Statement:
+        - Action: s3:GetObject
+          Effect: Allow
+          Resource:
+            Fn::Sub:
+            - "${WebsiteBucketArn}/*"
+            - WebsiteBucketArn:
+                Fn::GetAtt:
+                - WebsiteBucket
+                - Arn
+          Principal:
+            AWS:
+              Fn::Sub: arn:aws:iam::cloudfront:user/CloudFront Origin Access Identity ${WebsiteOriginIdentity}
+
+  Certificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName:
+        Fn::Sub: "*.${DomainName}"
+      SubjectAlternativeNames:
+      - Ref: DomainName
+      - Fn::Sub: "*.${DomainName}"
+      DomainValidationOptions:
+      - DomainName:
+          Ref: DomainName
+        ValidationDomain:
+          Ref: DomainName
+      ValidationMethod: DNS
+
+  WebsiteCodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Artifacts:
+        Type: NO_ARTIFACTS
+      BadgeEnabled: true
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: standard:5.0
+        Type: LINUX_CONTAINER
+      LogsConfig:
+        CloudWatchLogs:
+          GroupName:
+            Ref: WebsiteCodeBuildLogs
+          Status: ENABLED
+          StreamName: CodeBuildProject
+      Name:
+        Fn::Sub: "${ResourceNamesPrefix}WebsiteBinaries"
+      ServiceRole:
+        Ref: WebsiteCodeBuildServiceRole
+      Source:
+        Auth:
+          Resource:
+            Fn::ImportValue: CodeBuildCredential
+          Type: OAUTH
+        BuildSpec:
+          Fn::Sub:
+          - |
+            version: 0.2
+            env:
+              shell: bash
+            phases:
+              install:
+                commands:
+                - npm install
+              build:
+                commands:
+                - npm build
+              post_build:
+                commands:
+                - aws s3 sync --delete $CODEBUILD_SRC_DIR/public s3://${WebsiteBucket}
+                - >
+                  cd $CODEBUILD_SRC_DIR/public
+                  regex="./(.*)/index.html"
+                  find . | while read -r line; do
+                      if [[ $filePath =~ $regex ]]; then
+                          directoryPath=${BASH_REMATCH[1]}
+                          echo "Uploading from $filePath to s3://$BUCKET/$directoryPath/"
+                          aws s3api put-object --bucket "$BUCKET" --body $filePath --key "$directoryPath" --content-type text/html > /dev/null
+                          aws s3api put-object --bucket "$BUCKET" --body $filePath --key "$directoryPath/" --content-type text/html > /dev/null
+                      fi;
+                  done
+          - WebsiteBucket:
+              Ref: WebsiteBucket
+        Location:
+          Ref: RepositoryUrl
+        Type: GITHUB
+      SourceVersion: master
+      TimeoutInMinutes: 5
+  WebsiteCodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Action:
+          - sts:AssumeRole
+          Effect: Allow
+          Principal:
+            Service:
+            - codebuild.amazonaws.com
+      ManagedPolicyArns:
+      - Ref: WebsiteCodeBuildServicePolicy
+  WebsiteCodeBuildServicePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName:
+        Fn::Sub: "${ResourceNamesPrefix}WebsiteCodeBuildPolicy"
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action:
+          - iam:PassRole
+          Resource:
+          - "*"
+        - Effect: Allow
+          Action:
+          - logs:CreateLogStream
+          - logs:PutLogEvents
+          Resource:
+            Fn::GetAtt:
+            - WebsiteCodeBuildLogs
+            - Arn
+        - Effect: Allow
+          Action:
+          - s3:DeleteObject
+          - s3:GetBucketLocation
+          - s3:GetObject
+          - s3:ListBucket
+          - s3:PutObject
+          Resource:
+          - Fn::GetAtt:
+            - WebsiteBucket
+            - Arn
+          - Fn::Sub:
+            - "${WebsiteBucketArn}/*"
+            - WebsiteBucketArn:
+                Fn::GetAtt:
+                - WebsiteBucket
+                - Arn
+  WebsiteCodeBuildLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName:
+        Fn::Sub: "${ResourceNamesPrefix}WebsiteCodeBuildLogs"
+      RetentionInDays: 90
