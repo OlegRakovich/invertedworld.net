@@ -182,6 +182,15 @@ Resources:
         Location:
           Ref: RepositoryUrl
         Type: GITHUB
+      Triggers:
+        BuildType: BUILD
+        Webhook: True
+        FilterGroups:
+        - - Type: EVENT
+            Pattern: PUSH,PULL_REQUEST_MERGED
+          - Type: HEAD_REF
+            Pattern: ^refs/heads/master$
+            ExcludeMatchedPattern: false
       SourceVersion: master
       TimeoutInMinutes: 5
   WebsiteCodeBuildServiceRole:
