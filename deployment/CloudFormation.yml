@@ -28,15 +28,15 @@ Resources:
           CachedMethods:
           - GET
           - HEAD
-          Compress: false
-          DefaultTTL: 0
+          Compress: true
           ForwardedValues:
             Cookies:
               Forward: none
             Headers: []
             QueryString: false
             QueryStringCacheKeys: []
-          MaxTTL: 0
+          DefaultTTL: 86400
+          MaxTTL: 31536000
           MinTTL: 0
           TargetOriginId: WebsiteOrigin
           ViewerProtocolPolicy: redirect-to-https
@@ -177,14 +177,17 @@ Resources:
                           aws s3api put-object --bucket "${WebsiteBucket}" --body $filePath --key "$directoryPath/" --content-type text/html > /dev/null;
                       fi;
                   done;
+                - aws cloudfront create-invalidation --distribution-id ${DomainCloudFront} --paths '/*'
           - WebsiteBucket:
               Ref: WebsiteBucket
+            DomainCloudFront:
+              Ref: DomainCloudFront
         Location:
           Ref: RepositoryUrl
         Type: GITHUB
       Triggers:
         BuildType: BUILD
-        Webhook: True
+        Webhook: true
         FilterGroups:
         - - Type: EVENT
             Pattern: PUSH,PULL_REQUEST_MERGED
@@ -228,6 +231,11 @@ Resources:
             Fn::GetAtt:
             - WebsiteCodeBuildLogs
             - Arn
+        - Effect: Allow
+          Action:
+          - cloudfront:CreateInvalidation
+          Resource:
+          - Fn::Sub: "arn:aws:cloudfront::${AWS::AccountId}:distribution/${DomainCloudFront}"
         - Effect: Allow
           Action:
           - s3:DeleteObject
